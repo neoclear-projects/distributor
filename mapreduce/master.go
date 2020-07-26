@@ -1,204 +1,334 @@
+// Copyright 2020 NeoClear. All rights reserved.
+// Algorithms and data structures defined to make master work
+
 package mapreduce
 
 import (
-	"log"
-	"net"
-	"net/rpc"
-	"strconv"
-	"sync"
-	"time"
+    "log"
+    "sync"
+    "time"
 )
 
 type WorkerStatus int
 
+type TaskId int
+type TaskType int
+
+// The status of worker machine
 const (
-	AVAILABLE = 0
-	RUNNING   = 1
-	FAILED    = 2
+    AVAILABLE = 0
+    RUNNING   = 1
+    FAILED    = 2
 )
 
+// The status of tasks
 const (
-	UNPROCESSED = 0
-	PROCESSING = 1
-	FINISHED = 2
+    UNPROCESSED = 0
+    PROCESSING  = 1
+    FINISHED    = 2
 )
 
+// The return type of rpc
 const (
-	WASTE = "WASTE"
+    WASTE = "WASTE"
 )
 
+// The data structure that stores worker status
 type WorkerRegistry struct {
-	status WorkerStatus
-	taskId int
+    status WorkerStatus
+    taskId TaskId
 }
 
+// The master data structure
 type Master struct {
-	// The lock
-	mu sync.Mutex
+    // The lock
+    mu sync.Mutex
 
-	// The mapping that stores the status of registered workers
-	workers map[int64]WorkerRegistry
+    // The mapping that stores the status of registered workers
+    workers map[int64]WorkerRegistry
 
-	// The number of map tasks
-	nMap int
-	// The number of reduce tasks
-	nReduce int
-	// A list of input files
-	inputFiles []string
+    // The number of map tasks
+    nMap int
+    // The number of reduce tasks
+    nReduce int
+    // A list of input files
+    inputFiles []string
 
-	// User-defined map function
-	// The map function takes a input file name and its content
-	// And return a list of key-value pairs
-	fMap func(string, string) []KeyValue
+    // Deprecated
+    // User-defined map function
+    // The map function takes a input file name and its content
+    // And return a list of key-value pairs
+    //fMap func(string, string) []KeyValue
 
-	// User-defined reduce function
-	// The reduce function takes a key and a list of value
-	// And return the merged data of string type
-	fReduce func(string, []string) string
+    // Deprecated
+    // User-defined reduce function
+    // The reduce function takes a key and a list of value
+    // And return the merged data of string type
+    //fReduce func(string, []string) string
 
-	// Mark the map task that is finished
-	mapStatus []int
-	mapFinishedCount int
-	// Mark the reduce task that is finished
-	reduceStatus []int
-	reduceFinishedCount int
+    // Mark the map task that is finished
+    mapStatus        []int
+    mapFinishedCount int
+    // Mark the reduce task that is finished
+    reduceStatus        []int
+    reduceFinishedCount int
+
+    // The port of master node
+    port int64
 }
 
-func MakeMaster(inputFiles []string, nReduce int,
-	fMap func(string, string) []KeyValue,
-	fReduce func(string, []string) string) *Master {
-	// Create and init master
-	master := Master{}
-	master.workers = map[int64]WorkerRegistry{}
-	master.nMap = len(inputFiles)
-	master.nReduce = nReduce
-	master.inputFiles = inputFiles
-	master.fMap = fMap
-	master.fReduce = fReduce
+// Create a new master node
+// Init values
+func MakeMaster(inputFiles []string, nReduce int, port int64) *Master {
+    // Create and init master
+    master := Master{}
+    master.workers = map[int64]WorkerRegistry{}
+    master.nMap = len(inputFiles)
+    master.nReduce = nReduce
+    master.inputFiles = inputFiles
 
-	master.mapStatus = make([]int, master.nMap)
-	master.reduceStatus = make([]int, master.nReduce)
+    // Init task status
+    master.mapStatus = make([]int, master.nMap)
+    master.reduceStatus = make([]int, master.nReduce)
 
-	return &master
+    master.port = port
+
+    return &master
 }
 
+// Register workers to master
 func (master *Master) RegisterWorker(args *RegisterSend,
-	reply *GeneralReply) error {
-	// Lock the register operation
-	master.mu.Lock()
-	defer master.mu.Unlock()
+    reply *GeneralReply) error {
+    // Lock the register operation
+    master.mu.Lock()
+    defer master.mu.Unlock()
 
-	// Register the worker with id
-	// Initially available
-	master.workers[args.Port] = WorkerRegistry{status: AVAILABLE}
+    // Register the worker with id
+    // Initially available
+    master.workers[args.Port] = WorkerRegistry{status: AVAILABLE}
+    reply.Err = OK
 
-	return nil
+    return nil
 }
 
+// rpc that indicates the task is finished (map or reduce)
 func (master *Master) TaskFinished(args *TaskFinishedSend,
-	reply *GeneralReply) error {
+    reply *GeneralReply) error {
 
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	switch args.TaskType {
-	case MAP:
-		if master.mapStatus[args.TaskId] == FINISHED {
-			reply.Err = WASTE
-			return nil
-		}
-		master.mapStatus[args.TaskId] = FINISHED
-		master.mapFinishedCount++
-	case REDUCE:
-		if master.reduceStatus[args.TaskId] == FINISHED {
-			reply.Err = WASTE
-			return nil
-		}
-		master.reduceStatus[args.TaskId] = FINISHED
-		master.reduceFinishedCount++
-	default:
-		log.Fatal("Unexpected Task Type")
-	}
+    master.mu.Lock()
+    defer master.mu.Unlock()
 
-	reply.Err = OK
-	return nil
+    // Reference (or pointer) to store actual status array
+    // And counter integer
+    var statusRef *[]int
+    var counter *int
+
+    // Assign actual value to statusRef and counter
+    switch args.TaskType {
+    case MAP:
+        // If the finished task type is map
+        statusRef = &master.mapStatus
+        counter = &master.mapFinishedCount
+    case REDUCE:
+        // If the finished task type is reduce
+        statusRef = &master.reduceStatus
+        counter = &master.reduceFinishedCount
+    default:
+        // If not match any task type, throw error
+        log.Fatal("Unexpected Task Type")
+    }
+
+    // Mark worker as available
+    master.workers[args.WorkerId] = WorkerRegistry{
+       status: AVAILABLE,
+       taskId: 0,
+    }
+
+
+    // If task already finished, reply WASTE
+    if (*statusRef)[args.TaskId] == FINISHED {
+        reply.Err = WASTE
+        return nil
+    }
+
+    // Mark task as finished, and inc counter
+    (*statusRef)[args.TaskId] = FINISHED
+    *counter++
+
+    reply.Err = OK
+    return nil
 }
 
-func (master *Master) RunServer(port int64) {
-	remotePC := rpc.NewServer()
-	remotePC.Register(master)
+// Execute the master
+func (master *Master) RunMaster() {
+    // Create the corresponding server
+    rp, listener := CreateServer(master, master.port, "Master")
 
-	l, e := net.Listen("tcp", ":"+strconv.FormatInt(port, 10))
-	if e != nil {
-		log.Fatal("Master listen error:", e)
-	}
+    // Run server concurrently
+    go RunServer("Master", rp, listener)
 
-	// Run server concurrently
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err == nil {
-				go remotePC.ServeConn(conn)
-			} else {
-				break
-			}
-		}
-		l.Close()
-	}()
-	go schedule(master)
+
+    // Schedule tasks
+    // Run map tasks
+    // Then run reduce tasks
+    go schedule(master)
 }
 
-func (master *Master) checkAvailableWorkerForTask(taskType int) {
-	for {
-		master.mu.Lock()
+// Return the port of available worker
+// Return -1 if no worker is available
+func (master *Master) getAvailableWorker() int64 {
+    master.mu.Lock()
+    defer master.mu.Unlock()
 
-		switch taskType {
-		case MAP:
-			for idx, status := range master.mapStatus {
-				if status == UNPROCESSED {
-					for port, v := range master.workers {
-						if v.status == AVAILABLE {
-							args := MapStartSend{
-								FMap: master.fMap,
-								InputFile: master.inputFiles[idx],
-								TaskId: idx,
-							}
-							reply := GeneralReply{}
-							Call(port, "Worker.StartMap", &args, &reply)
-							break
-						}
-					}
-				}
-			}
-		case REDUCE:
-		default:
-			log.Fatal("Unexpected Task Type")
-		}
-
-		master.mu.Unlock()
-		time.Sleep(time.Second)
-	}
+    for port, v := range master.workers {
+        if v.status == AVAILABLE {
+            return port
+        }
+    }
+    return -1
 }
 
-func (master *Master) removeUnavailableWorker(taskType int) {
+func (master *Master) getStatusRef(taskType TaskType) *[]int {
+    master.mu.Lock()
+    defer master.mu.Unlock()
 
+    var statusRef *[]int
+
+    switch taskType {
+    case MAP:
+        statusRef = &master.mapStatus
+    case REDUCE:
+        statusRef = &master.reduceStatus
+    default:
+        log.Fatal("Unexpected Task Type")
+    }
+
+    return statusRef
+}
+
+// Return the unprocessed task id of task type
+// Return -1 if no unprocessed task is found
+func (master *Master) getUnprocessedTaskId(taskType TaskType) TaskId {
+    // The reference to actual task status array
+    statusRef := master.getStatusRef(taskType)
+
+    master.mu.Lock()
+    defer master.mu.Unlock()
+
+    for idx, status := range *statusRef {
+        if status == UNPROCESSED {
+            return TaskId(idx)
+        }
+    }
+
+    return -1
+}
+
+func (master *Master) setTaskStatus(id TaskId, taskType TaskType, status int) {
+    statusRef := master.getStatusRef(taskType)
+
+    master.mu.Lock()
+    defer master.mu.Unlock()
+
+    (*statusRef)[id] = status
+}
+
+func (master *Master) getTaskStatus(id TaskId, taskType TaskType) int {
+    statusRef := master.getStatusRef(taskType)
+
+    master.mu.Lock()
+    defer master.mu.Unlock()
+
+    return (*statusRef)[id]
+}
+
+func (master *Master) setWorkerStatus(workerId int64, status WorkerRegistry) {
+    master.mu.Lock()
+    defer master.mu.Unlock()
+
+    master.workers[workerId] = status
+}
+
+func (master *Master) checkAvailableWorkerForTask(taskType TaskType) {
+    for {
+        // If task has already finished, then just quit
+        // Because it is no longer necessary
+        if master.PhaseFinished(taskType) {
+            break
+        }
+        taskId := master.getUnprocessedTaskId(taskType)
+        if taskId == -1 {
+            Pause()
+            continue
+        }
+
+        workerId := master.getAvailableWorker()
+        if workerId == -1 {
+            Pause()
+            continue
+        }
+
+        master.setTaskStatus(taskId, taskType, PROCESSING)
+        master.setWorkerStatus(workerId, WorkerRegistry{
+            status: RUNNING,
+            taskId: taskId,
+        })
+
+        master.mu.Lock()
+
+        args := MapStartSend{
+            InputFile: master.inputFiles[taskId],
+            TaskId: taskId,
+        }
+        reply := GeneralReply{}
+
+        master.mu.Unlock()
+
+        Call(workerId, "Worker.StartMap", &args, &reply)
+
+        Pause()
+    }
+}
+
+func (master *Master) removeUnavailableWorker(taskType TaskType) {
+    master.mu.Lock()
+    defer master.mu.Unlock()
+
+    for workId, _ := range master.workers {
+        if !Call(workId, "Worker.IsOnline", &struct{}{}, &struct{}{}) {
+            master.workers[workId] = WorkerRegistry{taskId: 0, status: FAILED}
+            //if (master.workers[workId].taskId)
+        }
+
+        time.Sleep(time.Second)
+    }
 }
 
 func (master *Master) MapFinished() bool {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	return master.mapFinishedCount == master.nMap
+    master.mu.Lock()
+    defer master.mu.Unlock()
+    return master.mapFinishedCount == master.nMap
 }
 
 func (master *Master) ReduceFinished() bool {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	return master.reduceFinishedCount == master.nReduce
+    master.mu.Lock()
+    defer master.mu.Unlock()
+    return master.reduceFinishedCount == master.nReduce
 }
 
-func (master *Master) Done() bool {
-	master.mu.Lock()
-	defer master.mu.Unlock()
+func (master *Master) PhaseFinished(taskType TaskType) bool {
+    switch taskType {
+    case MAP:
+        return master.MapFinished()
+    case REDUCE:
+        return master.ReduceFinished()
+    default:
+        log.Fatal("Unexpected Task Type")
+    }
+    return false
+}
 
-	return master.nMap == master.mapFinishedCount &&
-		master.nReduce == master.reduceFinishedCount
+// Check if the whole task has finished
+func (master *Master) Done() bool {
+    return master.MapFinished() && master.ReduceFinished()
 }

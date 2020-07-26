@@ -1,24 +1,21 @@
 package mapreduce
 
 import (
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"log"
-	"net"
-	"net/rpc"
-	"os"
-	"strconv"
-	"sync"
+    "encoding/json"
+    "io/ioutil"
+    "log"
+    "os"
+    "strconv"
+    "sync"
 )
 
 const (
-	MAP = 0
-	REDUCE = 1
+    MAP    = 0
+    REDUCE = 1
 )
 
 type RegisterSend struct {
-	Port int64
+    Port int64
 }
 
 //type RegisterReply struct {
@@ -26,124 +23,103 @@ type RegisterSend struct {
 //}
 
 type TaskFinishedSend struct {
-	TaskId int
-	TaskType int
+    TaskId   TaskId
+    TaskType TaskType
+    WorkerId int64
 }
 
 type MapStartSend struct {
-	FMap func(string, string)[]KeyValue
-	InputFile string
-	TaskId int
+    InputFile string
+    TaskId    TaskId
+    ReduceNum int
 }
 
 type ReduceStartSend struct {
-	FReduce func(string, []string)string
 }
 
 type Worker struct {
-	mu sync.Mutex
-	port int64
-	masterPort int64
+    mu         sync.Mutex
+    port       int64
+    masterPort int64
 
-	fMap func(string, string) []KeyValue
-	fReduce func(string, []string) string
+    fMap    func(string, string) []KeyValue
+    fReduce func(string, []string) string
 
-	// Task id assigned to worker
-	taskId int
+    // Task id assigned to worker
+    taskId int
 }
 
 func MakeWorker(port, masterPort int64,
-	fMap func(string, string) []KeyValue,
-	fReduce func(string, []string) string) *Worker {
-	worker := Worker{}
+    fMap func(string, string) []KeyValue,
+    fReduce func(string, []string) string) *Worker {
+    worker := Worker{}
 
-	// Init ports
-	worker.port = port
-	worker.masterPort = masterPort
+    // Init ports
+    worker.port = port
+    worker.masterPort = masterPort
 
-	worker.fMap = fMap
-	worker.fReduce = fReduce
+    worker.fMap = fMap
+    worker.fReduce = fReduce
 
-	return &worker
+    return &worker
 }
 
 func (worker *Worker) StartMap(args *MapStartSend, reply *GeneralReply) error {
 
-	content, err := ioutil.ReadFile(args.InputFile)
-	if err != nil {
-		log.Fatal("Cannot Open Map Source")
-	}
+    content, err := ioutil.ReadFile(args.InputFile)
+    if err != nil {
+        log.Fatal("Cannot Open Map Source")
+    }
 
-	tempFile, e := ioutil.TempFile("", "distributor")
-	if e != nil {
-		log.Fatal("Cannot Create Temp File")
-	}
+    tempFile, e := ioutil.TempFile("", "distributor")
+    if e != nil {
+        log.Fatal("Cannot Create Temp File")
+    }
 
-	enc := json.NewEncoder(tempFile)
-	//fmt.Println(worker.fMap("txt", "contents are here"))
-	//fmt.Println(content)
-	go func() {
-		for _, kv := range worker.fMap(args.InputFile, string(content)) {
-			fmt.Println(kv.Key, kv.Value)
-			err = enc.Encode(&kv)
-			if err != nil {
-				log.Fatal("Unable To Encode Map Result")
-			}
-		}
+    enc := json.NewEncoder(tempFile)
 
-		send := TaskFinishedSend{TaskId: args.TaskId, TaskType: MAP}
-		result := GeneralReply{}
+    go func() {
+        for _, kv := range worker.fMap(args.InputFile, string(content)) {
+            err = enc.Encode(&kv)
+            if err != nil {
+                log.Fatal("Unable To Encode Map Result")
+            }
+        }
 
-		Call(worker.masterPort, "Master.TaskFinished", &send, &result)
+        send := TaskFinishedSend{TaskId: args.TaskId, TaskType: MAP, WorkerId: worker.port}
+        result := GeneralReply{}
 
-		if result.Err == OK {
-			name := tempFile.Name()
-			//fmt.Println(name)
-			tempFile.Close()
-			os.Rename(name, "mapresult/mr-"+strconv.FormatInt(int64(args.TaskId), 10))
-		}
-	}()
+        Call(worker.masterPort, "Master.TaskFinished", &send, &result)
 
-	return nil
+        if result.Err == OK {
+            name := tempFile.Name()
+            //fmt.Println(name)
+            tempFile.Close()
+            os.Rename(name, "mapresult/mr-"+strconv.FormatInt(int64(args.TaskId), 10))
+        }
+    }()
+
+    return nil
 }
 
 func (worker *Worker) StartReduce(args *ReduceStartSend, reply *GeneralReply) error {
-	return nil
+    return nil
 }
 
 func (worker *Worker) StartWorker() {
-	worker.mu.Lock()
-	defer worker.mu.Unlock()
+    rp, listener := CreateServer(worker, worker.port, "Worker")
 
-	workerPC := rpc.NewServer()
-	workerPC.Register(worker)
+    // Run worker server concurrently
+    go RunServer("Worker", rp, listener)
 
-	l, e := net.Listen("tcp", ":"+strconv.FormatInt(worker.port, 10))
-	if e != nil {
-		log.Fatal("Master listen error:", e)
-	}
+    Call(
+        worker.masterPort,
+        "Master.RegisterWorker",
+        &RegisterSend{worker.port},
+        &GeneralReply{},
+    )
+}
 
-	// Run server concurrently
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err == nil {
-				go workerPC.ServeConn(conn)
-			} else {
-				break
-			}
-		}
-		l.Close()
-	}()
-
-
-
-	args := RegisterSend{worker.port}
-	reply := GeneralReply{}
-	Call(
-		worker.masterPort,
-		"Master.RegisterWorker",
-		&args,
-		&reply,
-	)
+func (worker *Worker) IsOnline(_, _ *struct{}) error {
+    return nil
 }
