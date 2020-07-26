@@ -110,6 +110,6 @@ func iHash(key string) int {
 }
 
 // Convert int64 to string
-func int64ToString(val int64) string {
-    return strconv.FormatInt(val, 10)
+func int2str(val int) string {
+    return strconv.FormatInt(int64(val), 10)
 }

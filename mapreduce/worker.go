@@ -101,13 +101,6 @@ func (worker *Worker) StartMap(args *MapStartSend, _ ArgEmpty) error {
     tempFiles := createTemps(args.ReduceNum)
     encoders := createEnc(tempFiles)
 
-    //tempFile, e := ioutil.TempFile("", "distributor")
-    //if e != nil {
-    //	log.Fatal("Cannot Create Temp File")
-    //}
-    //
-    //enc := json.NewEncoder(tempFile)
-
     go func() {
         for _, kv := range worker.fMap(args.InputFile, string(content)) {
             id := iHash(kv.Key) % args.ReduceNum
@@ -127,14 +120,9 @@ func (worker *Worker) StartMap(args *MapStartSend, _ ArgEmpty) error {
                 tempFiles[i].Close()
                 os.Rename(
                     name,
-                    "mapresult/"+IRP+"-"+int64ToString(int64(args.TaskId))+"-"+int64ToString(int64(i)),
+                    "mapresult/"+IRP+"-"+int2str(int(args.TaskId))+"-"+int2str(i),
                 )
             }
-
-            //name := tempFile.Name()
-            ////fmt.Println(name)
-            //tempFile.Close()
-            //os.Rename(name, "mapresult/mr-"+strconv.FormatInt(int64(args.TaskId), 10))
         }
     }()
 
