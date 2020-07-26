@@ -5,6 +5,7 @@ package mapreduce
 
 import (
     "fmt"
+    "hash/fnv"
     "log"
     "net"
     "net/rpc"
@@ -15,11 +16,18 @@ import (
 type Err string
 
 const DURATION = time.Millisecond * 50
+const OFFLINE = time.Millisecond * 500
+
+const IRP = "mr"
+const ROP = "wc"
 
 const (
     OK   = "OK"
     FAIL = "FAIL"
 )
+
+// The placeholder for rpc function parameter
+type ArgEmpty *struct{}
 
 // The general reply object
 // Carries a single Error object (aka string)
@@ -92,4 +100,16 @@ func WaitUntil(f func() bool) {
     for !f() {
         Pause()
     }
+}
+
+// The hash function used to split map result
+func iHash(key string) int {
+    h := fnv.New32a()
+    h.Write([]byte(key))
+    return int(h.Sum32() & 0x7fffffff)
+}
+
+// Convert int64 to string
+func int64ToString(val int64) string {
+    return strconv.FormatInt(val, 10)
 }

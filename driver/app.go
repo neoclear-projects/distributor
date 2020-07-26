@@ -29,7 +29,7 @@ func main() {
         "dataset/d5.txt",
     }
     rand.Seed(int64(time.Now().Second()))
-    var PORT int64 = int64(rand.Int()%1000 + 4000)
+    var PORT int64 = int64(rand.Int()%1000 + 8000)
 
     master := mapreduce.MakeMaster(files, 3, PORT)
     master.RunMaster()
@@ -41,5 +41,5 @@ func main() {
     w3 := mapreduce.MakeWorker(PORT-1200, PORT, mapFunc, mockReduce)
     w3.StartWorker()
 
-    mapreduce.WaitUntil(master.Done)
+    mapreduce.WaitUntil(master.MapFinished)
 }

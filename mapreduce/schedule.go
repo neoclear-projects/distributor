@@ -7,17 +7,17 @@ func schedule(master *Master) {
     go master.checkAvailableWorkerForTask(MAP)
 
     // Run thread to periodically remove unavailable worker
-    go master.removeUnavailableWorker(MAP)
+    //go master.removeUnavailableWorker(MAP)
 
     // Wait for map to be finished
     WaitUntil(master.MapFinished)
 
-    // Run thread to periodically check available workers to assign reduce tasks
-    go master.checkAvailableWorkerForTask(REDUCE)
-
-    // Run thread to periodically remote unavailable worker
-    go master.removeUnavailableWorker(REDUCE)
-
-    // Wait for reduce to be finished
-    WaitUntil(master.ReduceFinished)
+    //// Run thread to periodically check available workers to assign reduce tasks
+    //go master.checkAvailableWorkerForTask(REDUCE)
+    //
+    //// Run thread to periodically remote unavailable worker
+    //go master.removeUnavailableWorker(REDUCE)
+    //
+    //// Wait for reduce to be finished
+    //WaitUntil(master.ReduceFinished)
 }

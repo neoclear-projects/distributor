@@ -109,7 +109,10 @@ func (master *Master) RegisterWorker(args *RegisterSend,
 
 	// Register the worker with id
 	// Initially available
-	master.workers[args.Port] = WorkerRegistry{status: AVAILABLE}
+	master.workers[args.Port] = WorkerRegistry{
+		status: AVAILABLE,
+		taskId: -1,
+	}
 	reply.Err = OK
 
 	return nil
@@ -145,7 +148,7 @@ func (master *Master) TaskFinished(args *TaskFinishedSend,
 	// Mark worker as available
 	master.workers[args.WorkerId] = WorkerRegistry{
 		status: AVAILABLE,
-		taskId: 0,
+		taskId: -1,
 	}
 
 	// If task already finished, reply WASTE
@@ -179,9 +182,6 @@ func (master *Master) RunMaster() {
 // Return the port of available worker
 // Return -1 if no worker is available
 func (master *Master) getAvailableWorker() int64 {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	for port, v := range master.workers {
 		if v.status == AVAILABLE {
 			return port
@@ -192,9 +192,6 @@ func (master *Master) getAvailableWorker() int64 {
 
 // Get the reference of status array given task type
 func (master *Master) getStatusRef(taskType TaskType) *[]int {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	// The reference to actual status array
 	var statusRef *[]int
 
@@ -216,9 +213,6 @@ func (master *Master) getUnprocessedTaskId(taskType TaskType) TaskId {
 	// The reference to actual task status array
 	statusRef := master.getStatusRef(taskType)
 
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	for idx, status := range *statusRef {
 		if status == UNPROCESSED {
 			return TaskId(idx)
@@ -231,28 +225,17 @@ func (master *Master) getUnprocessedTaskId(taskType TaskType) TaskId {
 // Set the status indicated by taskId and taskType
 func (master *Master) setTaskStatus(id TaskId, taskType TaskType, status int) {
 	statusRef := master.getStatusRef(taskType)
-
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	(*statusRef)[id] = status
 }
 
 // Get the status indicated by taskId and taskType
 func (master *Master) getTaskStatus(id TaskId, taskType TaskType) int {
 	statusRef := master.getStatusRef(taskType)
-
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	return (*statusRef)[id]
 }
 
 // Set the status of worker to status
 func (master *Master) setWorkerStatus(workerId int64, status WorkerRegistry) {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
 	master.workers[workerId] = status
 }
 
@@ -265,10 +248,13 @@ func (master *Master) checkAvailableWorkerForTask(taskType TaskType) {
 			break
 		}
 
+		master.mu.Lock()
+
 		// Get unprocessed task id
 		taskId := master.getUnprocessedTaskId(taskType)
 		if taskId == -1 {
 			Pause()
+			master.mu.Unlock()
 			continue
 		}
 
@@ -276,6 +262,7 @@ func (master *Master) checkAvailableWorkerForTask(taskType TaskType) {
 		workerId := master.getAvailableWorker()
 		if workerId == -1 {
 			Pause()
+			master.mu.Unlock()
 			continue
 		}
 
@@ -286,11 +273,10 @@ func (master *Master) checkAvailableWorkerForTask(taskType TaskType) {
 			taskId: taskId,
 		})
 
-		master.mu.Lock()
-
 		args := MapStartSend{
 			InputFile: master.inputFiles[taskId],
 			TaskId:    taskId,
+			ReduceNum: master.nReduce,
 		}
 		reply := GeneralReply{}
 
@@ -311,7 +297,11 @@ func (master *Master) removeUnavailableWorker(taskType TaskType) {
 	for workId, _ := range master.workers {
 		if !Call(workId, "Worker.IsOnline", &struct{}{}, &struct{}{}) {
 			master.workers[workId] = WorkerRegistry{taskId: 0, status: FAILED}
-			//if (master.workers[workId].taskId)
+			// If this worker is running a task
+			// Mark task as unprocessed (meaning have to be redo)
+			if id := master.workers[workId].taskId; id != -1 {
+				master.setTaskStatus(id, taskType, UNPROCESSED)
+			}
 		}
 
 		time.Sleep(time.Second)
